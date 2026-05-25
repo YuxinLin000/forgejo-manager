@@ -14,6 +14,7 @@ Designed for:
 - Deploy Forgejo with Docker
 - Interactive and non-interactive workflows
 - Backup and restore support
+- Rollback support using automatic pre-upgrade snapshots
 - Upgrade workflow with automatic pre-upgrade backup
 - Existing configuration preservation
 - WSL-friendly path handling
@@ -80,6 +81,20 @@ Direct restore:
 ./forgejo-manager.sh restore \
   --backup ~/forgejo-backups/forgejo-backup-YYYYMMDD-HHMMSS.tar.gz
 ```
+
+### Rollback
+
+```bash
+./forgejo-manager.sh rollback
+```
+
+Restores the most recent:
+
+```text
+forgejo-pre-upgrade-*.tar.gz
+```
+
+snapshot automatically.
 
 ### Upgrade
 

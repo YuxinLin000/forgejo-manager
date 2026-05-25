@@ -63,6 +63,7 @@ Usage:
   $0 deploy [options]
   $0 backup [options]
   $0 restore [--backup FILE] [options]
+  $0 rollback [options]
   $0 upgrade [options]
   $0 status [options]
   $0 portproxy-info [options]
@@ -88,6 +89,7 @@ Examples:
   $0 backup -y
   $0 restore
   $0 restore --backup ~/forgejo-backups/forgejo-backup-YYYYMMDD-HHMMSS.tar.gz
+  $0 rollback
   $0 upgrade -y
 USAGE
 }
@@ -439,6 +441,52 @@ restore() {
   echo "$BACKUP_FILE"
 }
 
+
+rollback() {
+  FORGEJO_DIR="$(expand_path "$(ask "Forgejo directory" "$FORGEJO_DIR")")"
+  BACKUP_DIR="$(expand_path "$BACKUP_DIR")"
+
+  if [[ ! -d "$BACKUP_DIR" ]]; then
+    echo "Backup directory not found: $BACKUP_DIR"
+    exit 1
+  fi
+
+  mapfile -t rollback_files < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "forgejo-pre-upgrade-*.tar.gz" | sort -r)
+
+  if [[ "${#rollback_files[@]}" -eq 0 ]]; then
+    echo "No pre-upgrade rollback backup found in: $BACKUP_DIR"
+    echo "Expected pattern: forgejo-pre-upgrade-*.tar.gz"
+    exit 1
+  fi
+
+  BACKUP_FILE="${rollback_files[0]}"
+
+  echo "Rollback target:"
+  echo "$BACKUP_FILE"
+  echo
+
+  confirm "Rollback will replace the current Forgejo directory with this pre-upgrade backup. Continue?" || exit 1
+
+  if [[ -d "$FORGEJO_DIR" ]]; then
+    cd "$FORGEJO_DIR"
+    docker compose down 2>/dev/null || true
+    cd ~
+    mv "$FORGEJO_DIR" "${FORGEJO_DIR}.before-rollback-$(date +%Y%m%d-%H%M%S)"
+  fi
+
+  mkdir -p "$(dirname "$FORGEJO_DIR")"
+  tar -xzf "$BACKUP_FILE" -C "$(dirname "$FORGEJO_DIR")"
+
+  cd "$FORGEJO_DIR"
+  sudo chown -R "$(id -u):$(id -g)" .
+  require_docker
+  docker compose up -d
+
+  echo "Rollback completed."
+  echo "Rolled back from:"
+  echo "$BACKUP_FILE"
+}
+
 upgrade() {
   MODE="$(ask "Deployment mode: linux or wsl" "$MODE")"
   apply_mode_defaults
@@ -528,6 +576,7 @@ case "$COMMAND" in
   deploy) deploy ;;
   backup) backup ;;
   restore) restore ;;
+  rollback) rollback ;;
   upgrade) upgrade ;;
   status) status ;;
   portproxy-info) portproxy_info ;;
