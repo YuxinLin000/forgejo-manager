@@ -440,6 +440,9 @@ restore() {
 }
 
 upgrade() {
+  MODE="$(ask "Deployment mode: linux or wsl" "$MODE")"
+  apply_mode_defaults
+
   FORGEJO_DIR="$(expand_path "$(ask "Forgejo directory" "$FORGEJO_DIR")")"
   BACKUP_DIR="$(expand_path "$BACKUP_DIR")"
 
