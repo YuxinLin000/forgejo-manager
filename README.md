@@ -1,52 +1,72 @@
 # forgejo-manager
 
-Simple Forgejo deployment / backup / restore manager for WSL + Docker environments.
+Lightweight Forgejo deployment / backup / restore manager for Docker environments.
 
 Designed for:
-- small internal teams
-- offline / LAN setups
-- Windows + WSL workflows
-- lightweight self-hosted Git infrastructure
+- self-hosted internal Git
+- small teams
+- offline / LAN environments
+- WSL2 and Linux servers
+- low-maintenance deployments
 
 ## Features
 
 - Deploy Forgejo with Docker
-- Persistent SQLite-based setup
+- Interactive and non-interactive workflows
 - Backup and restore support
-- Interactive and non-interactive modes
+- Upgrade workflow with automatic pre-upgrade backup
 - Existing configuration preservation
-- Automatic secret generation
 - WSL-friendly path handling
+- Linux and WSL deployment modes
+- SQLite-based persistent setup
 
 ## Requirements
 
-- Ubuntu WSL2
+- Linux or WSL2
 - Docker
 - Bash
 
-## Deploy
+## Quick Start
 
-Interactive:
+Interactive deployment:
 
 ```bash
 ./forgejo-manager.sh deploy
-````
+```
 
-Non-interactive:
+Linux server deployment:
 
 ```bash
 ./forgejo-manager.sh deploy -y \
+  --mode linux \
+  --external-host 192.168.1.10 \
+  --external-port 3000
+```
+
+WSL deployment:
+
+```bash
+./forgejo-manager.sh deploy -y \
+  --mode wsl \
   --external-host 192.168.137.1 \
   --external-port 3001
 ```
 
-## Backup
+## Commands
+
+### Deploy
+
+```bash
+./forgejo-manager.sh deploy
+```
+
+### Backup
 
 ```bash
 ./forgejo-manager.sh backup
 ```
 
-## Restore
+### Restore
 
 Interactive restore:
 
@@ -61,9 +81,39 @@ Direct restore:
   --backup ~/forgejo-backups/forgejo-backup-YYYYMMDD-HHMMSS.tar.gz
 ```
 
+### Upgrade
+
+```bash
+./forgejo-manager.sh upgrade
+```
+
+Creates a pre-upgrade backup automatically before pulling newer images.
+
+### Status
+
+```bash
+./forgejo-manager.sh status
+```
+
+### WSL Portproxy Helper
+
+```bash
+./forgejo-manager.sh portproxy-info
+```
+
+Displays example Windows `portproxy` commands for exposing WSL services to LAN.
+
 ## Notes
 
-This script does not configure Windows `portproxy`.
+Default configuration targets offline/internal network usage:
+
+- SQLite
+- registration disabled
+- SSH disabled
+- offline mode enabled
+- update checker disabled
+
+The script does not automatically configure Windows `portproxy`.
 
 Typical WSL LAN exposure example:
 
@@ -75,9 +125,12 @@ netsh interface portproxy add v4tov4 `
   connectport=3000
 ```
 
-Default configuration targets offline/internal network usage:
+## License
 
-* SQLite
-* registration disabled
-* SSH disabled
-* offline mode enabled
+MIT
+
+## Disclaimer
+
+This project is not affiliated with Forgejo.
+
+Forgejo is a trademark of its respective owners.

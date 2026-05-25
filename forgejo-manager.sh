@@ -5,13 +5,15 @@ DEFAULT_DIR="$HOME/forgejo"
 DEFAULT_BACKUP_DIR="$HOME/forgejo-backups"
 DEFAULT_IMAGE="code.forgejo.org/forgejo/forgejo:15.0.2"
 DEFAULT_INTERNAL_PORT="3000"
-DEFAULT_EXTERNAL_HOST="192.168.137.1"
-DEFAULT_EXTERNAL_PORT="3001"
+DEFAULT_MODE="linux"
+DEFAULT_EXTERNAL_HOST="localhost"
+DEFAULT_EXTERNAL_PORT="3000"
 DEFAULT_APP_NAME="Forgejo"
 
 COMMAND="${1:-}"
 shift || true
 
+MODE="$DEFAULT_MODE"
 FORGEJO_DIR="$DEFAULT_DIR"
 BACKUP_DIR="$DEFAULT_BACKUP_DIR"
 IMAGE="$DEFAULT_IMAGE"
@@ -60,26 +62,39 @@ usage() {
 Usage:
   $0 deploy [options]
   $0 backup [options]
-  $0 restore --backup FILE [options]
+  $0 restore [--backup FILE] [options]
+  $0 upgrade [options]
   $0 status [options]
+  $0 portproxy-info [options]
 
 Options:
+  --mode MODE             Deployment mode: linux or wsl, default: $DEFAULT_MODE
   --dir PATH              Forgejo directory, default: $DEFAULT_DIR
   --backup-dir PATH       Backup directory, default: $DEFAULT_BACKUP_DIR
   --backup FILE           Backup file for restore
   --image IMAGE           Docker image, default: $DEFAULT_IMAGE
-  --internal-port PORT    WSL/Docker port, default: $DEFAULT_INTERNAL_PORT
-  --external-host IP      External host shown in ROOT_URL, default: $DEFAULT_EXTERNAL_HOST
+  --internal-port PORT    Docker/WSL port, default: $DEFAULT_INTERNAL_PORT
+  --external-host HOST    External host shown in ROOT_URL, default: $DEFAULT_EXTERNAL_HOST
   --external-port PORT    External port shown in ROOT_URL, default: $DEFAULT_EXTERNAL_PORT
   --app-name NAME         Forgejo instance name, default: "$DEFAULT_APP_NAME"
   --force-config          Regenerate data/app.ini even if it already exists
   -y, --yes               Non-interactive mode
   -h, --help              Show help
+
+Examples:
+  $0 deploy
+  $0 deploy -y --mode linux --external-host 192.168.1.10 --external-port 3000
+  $0 deploy -y --mode wsl --external-host 192.168.137.1 --external-port 3001
+  $0 backup -y
+  $0 restore
+  $0 restore --backup ~/forgejo-backups/forgejo-backup-YYYYMMDD-HHMMSS.tar.gz
+  $0 upgrade -y
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --mode) MODE="$2"; shift 2 ;;
     --dir) FORGEJO_DIR="$(expand_path "$2")"; shift 2 ;;
     --backup-dir) BACKUP_DIR="$(expand_path "$2")"; shift 2 ;;
     --backup) BACKUP_FILE="$(expand_path "$2")"; shift 2 ;;
@@ -94,6 +109,34 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+apply_mode_defaults() {
+  case "$MODE" in
+    linux)
+      if [[ "$EXTERNAL_HOST" == "$DEFAULT_EXTERNAL_HOST" ]]; then
+        EXTERNAL_HOST="localhost"
+      fi
+      if [[ "$EXTERNAL_PORT" == "$DEFAULT_EXTERNAL_PORT" ]]; then
+        EXTERNAL_PORT="$INTERNAL_PORT"
+      fi
+      ;;
+    wsl)
+      if [[ "$EXTERNAL_HOST" == "$DEFAULT_EXTERNAL_HOST" ]]; then
+        EXTERNAL_HOST="192.168.137.1"
+      fi
+      if [[ "$EXTERNAL_PORT" == "$DEFAULT_EXTERNAL_PORT" ]]; then
+        EXTERNAL_PORT="3001"
+      fi
+      ;;
+    *)
+      echo "Invalid mode: $MODE"
+      echo "Allowed values: linux, wsl"
+      exit 1
+      ;;
+  esac
+}
+
+apply_mode_defaults
 
 require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
@@ -113,20 +156,35 @@ require_docker() {
   fi
 }
 
+install_packages() {
+  sudo apt update
+  sudo apt install -y ca-certificates curl gnupg git openssl
+}
+
+read_ini_value_or_default() {
+  local key="$1"
+  local file="$2"
+  local default="$3"
+
+  if [[ -f "$file" ]]; then
+    local value
+    value="$(grep -E "^${key}\s*=" "$file" | head -n 1 | cut -d= -f2- | xargs || true)"
+    if [[ -n "$value" ]]; then
+      echo "$value"
+      return
+    fi
+  fi
+
+  echo "$default"
+}
+
 generate_app_ini() {
   local app_ini="$FORGEJO_DIR/data/app.ini"
 
-  SECRET_KEY="$(openssl rand -hex 32)"
-  INTERNAL_TOKEN="$(openssl rand -hex 48)"
-  LFS_JWT_SECRET="$(openssl rand -hex 32)"
-  OAUTH2_JWT_SECRET="$(openssl rand -hex 32)"
-
-  if [[ -f "$app_ini" ]]; then
-    SECRET_KEY="$(grep -E '^SECRET_KEY\s*=' "$app_ini" | cut -d= -f2- | xargs || echo "$SECRET_KEY")"
-    INTERNAL_TOKEN="$(grep -E '^INTERNAL_TOKEN\s*=' "$app_ini" | cut -d= -f2- | xargs || echo "$INTERNAL_TOKEN")"
-    LFS_JWT_SECRET="$(grep -E '^LFS_JWT_SECRET\s*=' "$app_ini" | cut -d= -f2- | xargs || echo "$LFS_JWT_SECRET")"
-    OAUTH2_JWT_SECRET="$(grep -E '^JWT_SECRET\s*=' "$app_ini" | cut -d= -f2- | xargs || echo "$OAUTH2_JWT_SECRET")"
-  fi
+  SECRET_KEY="$(read_ini_value_or_default "SECRET_KEY" "$app_ini" "$(openssl rand -hex 32)")"
+  INTERNAL_TOKEN="$(read_ini_value_or_default "INTERNAL_TOKEN" "$app_ini" "$(openssl rand -hex 48)")"
+  LFS_JWT_SECRET="$(read_ini_value_or_default "LFS_JWT_SECRET" "$app_ini" "$(openssl rand -hex 32)")"
+  OAUTH2_JWT_SECRET="$(read_ini_value_or_default "JWT_SECRET" "$app_ini" "$(openssl rand -hex 32)")"
 
   cat > "$app_ini" <<INI
 APP_NAME = ${APP_NAME}
@@ -206,28 +264,8 @@ JWT_SECRET = ${OAUTH2_JWT_SECRET}
 INI
 }
 
-deploy() {
-  FORGEJO_DIR="$(expand_path "$(ask "Forgejo directory" "$FORGEJO_DIR")")"
-  IMAGE="$(ask "Forgejo image" "$IMAGE")"
-  INTERNAL_PORT="$(ask "Internal Docker/WSL HTTP port" "$INTERNAL_PORT")"
-  EXTERNAL_HOST="$(ask "External host/IP for access from other PCs" "$EXTERNAL_HOST")"
-  EXTERNAL_PORT="$(ask "External port for access from other PCs" "$EXTERNAL_PORT")"
-  APP_NAME="$(ask "Instance name" "$APP_NAME")"
-
-  sudo apt update
-  sudo apt install -y ca-certificates curl gnupg git openssl
-
-  require_docker
-
-  mkdir -p "$FORGEJO_DIR/data"
-  cd "$FORGEJO_DIR"
-
-  docker compose down --remove-orphans 2>/dev/null || true
-  docker rm -f forgejo 2>/dev/null || true
-
-  sudo chown -R "$(id -u):$(id -g)" data
-
-  cat > docker-compose.yml <<YAML
+write_compose_file() {
+  cat > "$FORGEJO_DIR/docker-compose.yml" <<YAML
 services:
   forgejo:
     image: ${IMAGE}
@@ -248,18 +286,9 @@ services:
     volumes:
       - ./data:/data
 YAML
+}
 
-  if [[ ! -f data/app.ini || "$FORCE_CONFIG" -eq 1 ]]; then
-    generate_app_ini
-    echo "Generated app.ini"
-  else
-    echo "Existing app.ini found. Keeping it unchanged."
-    echo "Use --force-config to regenerate app.ini."
-  fi
-
-  docker compose pull
-  docker compose up -d
-
+wait_for_forgejo() {
   echo "Waiting for Forgejo..."
   for i in {1..30}; do
     if curl -fsS "http://127.0.0.1:${INTERNAL_PORT}/" >/dev/null 2>&1; then
@@ -274,6 +303,51 @@ YAML
   echo "Forgejo did not respond. Logs:"
   docker logs --tail=120 forgejo
   exit 1
+}
+
+deploy() {
+  MODE="$(ask "Deployment mode: linux or wsl" "$MODE")"
+  apply_mode_defaults
+
+  FORGEJO_DIR="$(expand_path "$(ask "Forgejo directory" "$FORGEJO_DIR")")"
+  IMAGE="$(ask "Forgejo image" "$IMAGE")"
+  INTERNAL_PORT="$(ask "Internal Docker/WSL HTTP port" "$INTERNAL_PORT")"
+  EXTERNAL_HOST="$(ask "External host/IP for access from other machines" "$EXTERNAL_HOST")"
+  EXTERNAL_PORT="$(ask "External port for access from other machines" "$EXTERNAL_PORT")"
+  APP_NAME="$(ask "Instance name" "$APP_NAME")"
+
+  install_packages
+  require_docker
+
+  mkdir -p "$FORGEJO_DIR/data"
+  cd "$FORGEJO_DIR"
+
+  docker compose down --remove-orphans 2>/dev/null || true
+  docker rm -f forgejo 2>/dev/null || true
+
+  sudo chown -R "$(id -u):$(id -g)" data
+
+  write_compose_file
+
+  if [[ ! -f data/app.ini || "$FORCE_CONFIG" -eq 1 ]]; then
+    generate_app_ini
+    echo "Generated app.ini"
+  else
+    echo "Existing app.ini found. Keeping it unchanged."
+    echo "Use --force-config to regenerate app.ini."
+  fi
+
+  docker compose pull
+  docker compose up -d
+
+  wait_for_forgejo
+
+  if [[ "$MODE" == "wsl" ]]; then
+    echo
+    echo "WSL mode note:"
+    echo "This script does not configure Windows portproxy."
+    echo "Use '$0 portproxy-info --external-host ${EXTERNAL_HOST} --external-port ${EXTERNAL_PORT} --internal-port ${INTERNAL_PORT}' for an example."
+  fi
 }
 
 backup() {
@@ -365,6 +439,38 @@ restore() {
   echo "$BACKUP_FILE"
 }
 
+upgrade() {
+  FORGEJO_DIR="$(expand_path "$(ask "Forgejo directory" "$FORGEJO_DIR")")"
+  BACKUP_DIR="$(expand_path "$BACKUP_DIR")"
+
+  if [[ ! -d "$FORGEJO_DIR" ]]; then
+    echo "Forgejo directory not found: $FORGEJO_DIR"
+    exit 1
+  fi
+
+  require_docker
+
+  cd "$FORGEJO_DIR"
+
+  echo "Creating pre-upgrade backup..."
+  mkdir -p "$BACKUP_DIR"
+  ts="$(date +%Y%m%d-%H%M%S)"
+  backup_path="$BACKUP_DIR/forgejo-pre-upgrade-$ts.tar.gz"
+
+  docker compose down 2>/dev/null || true
+  cd "$(dirname "$FORGEJO_DIR")"
+  tar -czf "$backup_path" "$(basename "$FORGEJO_DIR")"
+  cd "$FORGEJO_DIR"
+
+  echo "Backup created:"
+  echo "$backup_path"
+
+  docker compose pull
+  docker compose up -d
+
+  wait_for_forgejo
+}
+
 status() {
   FORGEJO_DIR="$(expand_path "$FORGEJO_DIR")"
   echo "Forgejo dir: $FORGEJO_DIR"
@@ -378,11 +484,50 @@ status() {
   fi
 }
 
+portproxy_info() {
+  cat <<INFO
+Windows portproxy example for WSL mode:
+
+1. Get WSL IP from Windows PowerShell:
+
+   wsl hostname -I
+
+2. Enable IP Helper service if needed:
+
+   Start-Service iphlpsvc
+   Set-Service iphlpsvc -StartupType Automatic
+
+3. Add portproxy rule from Windows Administrator PowerShell:
+
+   netsh interface portproxy add v4tov4 \`
+     listenaddress=${EXTERNAL_HOST} \`
+     listenport=${EXTERNAL_PORT} \`
+     connectaddress=<WSL_IP> \`
+     connectport=${INTERNAL_PORT}
+
+4. Allow firewall inbound access:
+
+   New-NetFirewallRule \`
+     -DisplayName "Forgejo ${EXTERNAL_PORT}" \`
+     -Direction Inbound \`
+     -Protocol TCP \`
+     -LocalPort ${EXTERNAL_PORT} \`
+     -Action Allow \`
+     -Profile Any
+
+5. Test:
+
+   curl http://${EXTERNAL_HOST}:${EXTERNAL_PORT}/
+INFO
+}
+
 case "$COMMAND" in
   deploy) deploy ;;
   backup) backup ;;
   restore) restore ;;
+  upgrade) upgrade ;;
   status) status ;;
+  portproxy-info) portproxy_info ;;
   ""|-h|--help) usage ;;
   *) echo "Unknown command: $COMMAND"; usage; exit 1 ;;
 esac
